@@ -417,7 +417,7 @@ after_initialize do
         topics = topics.where("topics.id in (
           SELECT topic_id FROM topic_custom_fields
           WHERE (name = 'event_start' OR name ='event_end')
-          AND value > '#{Time.now.to_i}'
+          AND value > '#{Time.now.to_i-86400}'
         )")
       end
 
