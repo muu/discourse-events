@@ -152,7 +152,9 @@ after_initialize do
   require_dependency 'topic'
   class ::Topic
     def has_event?
-      self.custom_fields['event_start']&.nonzero?
+      self.custom_fields['event_start'].present? &&
+      self.custom_fields['event_start'].is_a?(Numeric) &&
+      self.custom_fields['event_start'] != 0
     end
 
     def event
@@ -319,7 +321,7 @@ after_initialize do
       topic.custom_fields['event_going_max'] = going_max if going_max
       topic.custom_fields['event_going'] = going if going
 
-      topic.save!
+      topic.save_custom_fields(true)
     end
   end
 
@@ -383,10 +385,8 @@ after_initialize do
 
   require_dependency 'topic_query'
   class ::TopicQuery
-    SORTABLE_MAPPING['event'] = 'custom_fields.event_start'
-
     def list_agenda
-      @options[:order] = 'event'
+      @options[:unordered] = true
       @options[:list] = 'agenda'
 
       opts = {
@@ -399,7 +399,7 @@ after_initialize do
     end
 
     def list_calendar
-      @options[:order] = 'event'
+      @options[:unordered] = true
       @options[:list] = 'calendar'
 
       opts = {
@@ -431,6 +431,21 @@ after_initialize do
           AND value > '#{Time.now.to_i-86400}'
         )")
       end
+
+      topics = topics.order("(
+          SELECT CASE
+          WHEN EXISTS (
+            SELECT true FROM topic_custom_fields tcf
+            WHERE tcf.topic_id::integer = topics.id::integer
+            AND tcf.name = 'event_start' LIMIT 1
+          )
+          THEN (
+            SELECT value::integer FROM topic_custom_fields tcf
+            WHERE tcf.topic_id::integer = topics.id::integer
+            AND tcf.name = 'event_start' LIMIT 1
+          )
+          ELSE 0 END
+        ) ASC")
 
       if options[:include_excerpt]
         topics.each { |t| t.include_excerpt = true }
@@ -501,6 +516,10 @@ after_initialize do
       cal = Icalendar::Calendar.new
       cal.x_wr_calname = calendar_name
       cal.x_wr_timezone = tzid
+      # add timezone once per calendar
+      event_now = DateTime.now
+      timezone = tz.ical_timezone event_now
+      cal.add_timezone timezone
 
       @topic_list = TopicQuery.new(current_user, list_opts).list_calendar
 
@@ -508,7 +527,6 @@ after_initialize do
         if t.event && t.event[:start]
           event = CalendarEvents::Helper.localize_event(t.event, tzid)
           timezone = tz.ical_timezone event[:start]
-          cal.add_timezone timezone
 
           ## to do: check if working later
           if event[:format] == :date_only
@@ -522,15 +540,15 @@ after_initialize do
               e.dtend = Icalendar::Values::DateTime.new event[:end], 'tzid' => tzid
             end
             e.summary = t.title
-            e.description = t.excerpt
-            e.url = t.url
+            e.description = t.url << "\n\n" << t.excerpt #add url to event body
+            e.url = t.url #most calendar clients don't display this field
           end
         end
       end
 
       cal.publish
 
-      render plain: cal.to_ical, formats: [:ics] unless performed?
+      render body: cal.to_ical, formats: [:ics], content_type: Mime::Type.lookup("text/calendar") unless performed?
     end
   end
 
