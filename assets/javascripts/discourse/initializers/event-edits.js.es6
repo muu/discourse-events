@@ -22,12 +22,12 @@ export default {
     Composer.serializeToTopic('event', 'topic.event');
 
     Composer.reopen({
-      @computed('subtype', 'category.events_enabled', 'topicFirstPost', 'topic.event', 'canCreateEvent')
+      @computed('subtype', 'category.custom_fields.events_enabled', 'topicFirstPost', 'topic.event', 'canCreateEvent')
       showEventControls(subtype, categoryEnabled, topicFirstPost, event, canCreateEvent) {
         return topicFirstPost && (subtype === 'event' || categoryEnabled || event) && canCreateEvent;
       },
 
-      @computed('category.events_min_trust_to_create')
+      @computed('category.custom_fields.events_min_trust_to_create')
       canCreateEvent(minTrust) {
         const user = Discourse.User.current();
         return user.staff || user.trust_level >= minTrust;
@@ -59,12 +59,12 @@ export default {
     });
 
     Topic.reopen({
-      @computed('subtype', 'category.events_enabled', 'canCreateEvent')
+      @computed('subtype', 'category.custom_fields.events_enabled', 'canCreateEvent')
       showEventControls(subtype, categoryEnabled, canCreateEvent) {
         return (subtype === 'event' || categoryEnabled) && canCreateEvent;
       },
 
-      @computed('category.events_min_trust_to_create')
+      @computed('category.custom_fields.events_min_trust_to_create')
       canCreateEvent(minTrust) {
         const user = Discourse.User.current();
         return user.staff || user.trust_level >= minTrust;
@@ -95,10 +95,10 @@ export default {
         if (category) {
           items = items.reject((item) => item.name === 'agenda' || item.name === 'calendar');
 
-          if (category.events_agenda_enabled) {
+          if (category.custom_fields.events_agenda_enabled) {
             items.push(Discourse.NavItem.fromText('agenda', args));
           }
-          if (category.events_calendar_enabled) {
+          if (category.custom_fields.events_calendar_enabled) {
             items.push(Discourse.NavItem.fromText('calendar', args));
           }
         }
@@ -128,7 +128,7 @@ export default {
         DiscourseURL.routeTo(href);
       },
 
-      @on('didInsertElement')
+      @on('didRender')
       moveElements() {
         const topic = this.get('topic');
 
@@ -158,11 +158,11 @@ export default {
       availableViews(category) {
         let views = this._super(...arguments);
 
-        if (category.get('events_agenda_enabled')) {
+        if (category.get('custom-fields.events_agenda_enabled')) {
           views.push({name: I18n.t('filters.agenda.title'), value: 'agenda'});
         }
 
-        if (category.get('events_calendar_enabled')) {
+        if (category.get('custom_fields.events_calendar_enabled')) {
           views.push({name: I18n.t('filters.calendar.title'), value: 'calendar'});
         }
 
@@ -245,6 +245,10 @@ export default {
       });
     });
 
+    withPluginApi('0.8.33', api => {
+      api.serializeToDraft('event');
+    });
+
     withPluginApi('0.8.12', api => {
       api.addDiscoveryQueryParam('end', { replace: true, refreshModel: true });
       api.addDiscoveryQueryParam('start', { replace: true, refreshModel: true });
@@ -318,7 +322,7 @@ export default {
       });
 
       api.modifyClass('controller:composer', {
-        @computed('model.action', 'model.event', 'model.category.events_required', 'lastValidatedAt')
+        @computed('model.action', 'model.event', 'model.category.custom_fields.events_required', 'lastValidatedAt')
         eventValidation(action, event, eventsRequired, lastValidatedAt) {
           if (action === CREATE_TOPIC && eventsRequired && !event) {
             return InputValidation.create({

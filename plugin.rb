@@ -51,6 +51,7 @@ after_initialize do
   Category.register_custom_field_type('events_calendar_enabled', :boolean)
   Category.register_custom_field_type('events_min_trust_to_create', :integer)
   Category.register_custom_field_type('events_required', :boolean)
+  Category.register_custom_field_type('events_event_label_no_text', :boolean)
 
   [
     "events_enabled",
@@ -136,6 +137,7 @@ after_initialize do
   Topic.register_custom_field_type('event_all_day', :boolean)
   Topic.register_custom_field_type('event_rsvp', :boolean)
   Topic.register_custom_field_type('event_going_max', :integer)
+  Topic.register_custom_field_type('event_version', :integer)
 
   TopicList.preloaded_custom_fields << 'event_start' if TopicList.respond_to? :preloaded_custom_fields
   TopicList.preloaded_custom_fields << 'event_end' if TopicList.respond_to? :preloaded_custom_fields
@@ -144,9 +146,11 @@ after_initialize do
   TopicList.preloaded_custom_fields << 'event_rsvp' if TopicList.respond_to? :preloaded_custom_fields
   TopicList.preloaded_custom_fields << 'event_going' if TopicList.respond_to? :preloaded_custom_fields
   TopicList.preloaded_custom_fields << 'event_going_max' if TopicList.respond_to? :preloaded_custom_fields
+  TopicList.preloaded_custom_fields << 'event_version' if TopicList.respond_to? :preloaded_custom_fields
 
   load File.expand_path('../lib/calendar_events.rb', __FILE__)
   load File.expand_path('../controllers/event_rsvp.rb', __FILE__)
+  load File.expand_path('../controllers/api_keys.rb', __FILE__)
 
   # a combined hash with iso8601 dates is easier to work with
   require_dependency 'topic'
@@ -171,6 +175,10 @@ after_initialize do
 
       if custom_fields['event_all_day'].present?
         event[:all_day] = custom_fields['event_all_day']
+      end
+
+      if custom_fields['event_version'].present?
+        event[:version] = custom_fields['event_version']
       end
 
       if event_rsvp
@@ -259,43 +267,52 @@ after_initialize do
   add_to_serializer(:current_user, :calendar_first_day_week) { object.custom_fields['calendar_first_day_week'] }
   register_editable_user_custom_field :calendar_first_day_week if defined? register_editable_user_custom_field
 
-  PostRevisor.track_topic_field(:event)
+  UserApiKey::SCOPES.reverse_merge!(
+    CalendarEvents::USER_API_KEY_SCOPE.to_sym => [
+      [:get, 'list#calendar_ics'],
+      [:get, 'list#agenda_ics'],
+      [:get, 'list#calendar_feed'],
+      [:get, 'list#agenda_feed'],
+    ],
+  )
 
-  PostRevisor.class_eval do
-    track_topic_field(:event) do |tc, event|
+  ::PostRevisor.track_topic_field(:event) do |tc, event|
       if tc.guardian.can_edit_event?(tc.topic.category)
         event_start = event['start'] ? event['start'].to_datetime.to_i : nil
-        tc.record_change('event_start', tc.topic.custom_fields['event_start'], event_start)
-        tc.topic.custom_fields['event_start'] = event_start
+        start_change = tc.record_change('event_start', tc.topic.custom_fields['event_start'], event_start)
+        tc.topic.custom_fields['event_start'] = event_start if start_change
 
         event_end = event['end'] ? event['end'].to_datetime.to_i : nil
-        tc.record_change('event_end', tc.topic.custom_fields['event_end'], event_end)
-        tc.topic.custom_fields['event_end'] = event_end
+        end_change = tc.record_change('event_end', tc.topic.custom_fields['event_end'], event_end)
+        tc.topic.custom_fields['event_end'] = event_end  if end_change
 
         all_day = event['all_day'] ? event['all_day'] === 'true' : false
-        tc.record_change('event_all_day', tc.topic.custom_fields['event_all_day'], all_day)
-        tc.topic.custom_fields['event_all_day'] = all_day
+        all_day_change = tc.record_change('event_all_day', tc.topic.custom_fields['event_all_day'], all_day)
+        tc.topic.custom_fields['event_all_day'] = all_day if all_day_change
 
         timezone = event['timezone']
-        tc.record_change('event_timezone', tc.topic.custom_fields['event_timezone'], timezone)
-        tc.topic.custom_fields['event_timezone'] = timezone
+        timezone_change = tc.record_change('event_timezone', tc.topic.custom_fields['event_timezone'], timezone)
+        tc.topic.custom_fields['event_timezone'] = timezone if timezone_change
 
         rsvp = event['rsvp'] ? event['rsvp'] === 'true' : false
-        tc.record_change('event_rsvp', tc.topic.custom_fields['event_rsvp'], rsvp)
-        tc.topic.custom_fields['event_rsvp'] = rsvp
+        rsvp_change = tc.record_change('event_rsvp', tc.topic.custom_fields['event_rsvp'], rsvp)
+        tc.topic.custom_fields['event_rsvp'] = rsvp if rsvp_change
 
         if rsvp
           going_max = event['going_max'] ? event['going_max'].to_i : nil
-          tc.record_change('event_going_max', tc.topic.custom_fields['event_going_max'], going_max)
-          tc.topic.custom_fields['event_going_max'] = going_max
+          going_max_change = tc.record_change('event_going_max', tc.topic.custom_fields['event_going_max'], going_max)
+          tc.topic.custom_fields['event_going_max'] = going_max if going_max_change
 
           going = event['going'] ? event['going'].join(',') : ''
-          tc.record_change('event_going', tc.topic.custom_fields['event_going'], going)
-          tc.topic.custom_fields['event_going'] = going
+          going_change = tc.record_change('event_going', tc.topic.custom_fields['event_going'], going)
+          tc.topic.custom_fields['event_going'] = going if going_change
+        end
+
+        if start_change || end_change || timezone_change # increment by 1, even if more than one props are changed at once
+          tc.topic.custom_fields['event_version'] = tc.topic.custom_fields['event_version'].nil? ? 1 : tc.topic.custom_fields['event_version'] + 1
         end
       end
     end
-  end
 
   DiscourseEvent.on(:post_created) do |post, opts, user|
     if post.is_first_post? && opts[:event]
@@ -312,6 +329,7 @@ after_initialize do
       rsvp = event['rsvp']
       going_max = event['going_max']
       going = event['going']
+      event_version = 1
 
       topic.custom_fields['event_start'] = event_start.to_datetime.to_i if event_start
       topic.custom_fields['event_end'] = event_end.to_datetime.to_i if event_end
@@ -320,6 +338,7 @@ after_initialize do
       topic.custom_fields['event_rsvp'] = rsvp if rsvp
       topic.custom_fields['event_going_max'] = going_max if going_max
       topic.custom_fields['event_going'] = going if going
+      topic.custom_fields['event_version'] = event_version if event_version
 
       topic.save_custom_fields(true)
     end
@@ -460,6 +479,9 @@ after_initialize do
   ListController.class_eval do
     skip_before_action :ensure_logged_in, only: [:calendar_ics, :agenda_ics]
 
+    USER_API_KEY ||= "user_api_key"
+    USER_API_CLIENT_ID ||= "user_api_client_id"
+
     def calendar_feed
       set_category if params[:category]
       self.send('event_feed', name: 'calendar', start: params[:start], end: params[:end])
@@ -509,8 +531,15 @@ after_initialize do
       calendar_url = "#{base_url}/calendar"
       list_opts = {}
       list_opts[:category] = @category.id if @category
+      list_opts[:tags] = params[:tags] if params[:tags]
 
-      tzid = params[:time_zone]
+      if current_user &&
+         SiteSetting.respond_to?(:assign_enabled) &&
+         SiteSetting.assign_enabled
+        list_opts[:assigned] = current_user.username if params[:assigned]
+      end
+
+      tzid = params[:time_zone] || ( SiteSetting.respond_to?(:events_timezone_default) && SiteSetting.events_timezone_default.present? && SiteSetting.events_timezone_default ) || "Etc/UTC"
       tz = TZInfo::Timezone.get tzid
 
       cal = Icalendar::Calendar.new
@@ -530,18 +559,20 @@ after_initialize do
 
           ## to do: check if working later
           if event[:format] == :date_only
-            event[:start] = event[:start].to_date
-            event[:end] = event[:end].to_date if event[:end]
+            event[:start] = event[:start].to_date.strftime "%Y%m%d"
+            event[:end] = (event[:end].to_date+1).strftime "%Y%m%d" if event[:end]
           end
 
           cal.event do |e|
-            e.dtstart = Icalendar::Values::DateTime.new event[:start], 'tzid' => tzid
+            e.dtstart = Icalendar::Values::DateOrDateTime.new(event[:start], 'tzid' => tzid).call
             if event[:end]
-              e.dtend = Icalendar::Values::DateTime.new event[:end], 'tzid' => tzid
+              e.dtend = Icalendar::Values::DateOrDateTime.new(event[:end], 'tzid' => tzid).call
             end
             e.summary = t.title
             e.description = t.url << "\n\n" << t.excerpt #add url to event body
             e.url = t.url #most calendar clients don't display this field
+            e.uid = t.id.to_s + "@" + Discourse.base_url.sub(/^https?\:\/\/(www.)?/,'')
+            e.sequence = event[:version]
           end
         end
       end
@@ -549,6 +580,19 @@ after_initialize do
       cal.publish
 
       render body: cal.to_ical, formats: [:ics], content_type: Mime::Type.lookup("text/calendar") unless performed?
+    end
+
+    # Logging in with user API keys normally only works by passing certain headers.
+    # As we cannot force third-party software to send those headers, we need to fake
+    # them using request parameters.
+    def current_user
+      if params.key?(USER_API_KEY)
+        request.env[Auth::DefaultCurrentUserProvider::USER_API_KEY] = params[USER_API_KEY]
+        if params.key?(USER_API_CLIENT_ID)
+          request.env[Auth::DefaultCurrentUserProvider::USER_API_CLIENT_ID] = params[USER_API_CLIENT_ID]
+        end
+      end
+      super
     end
   end
 

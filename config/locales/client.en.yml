@@ -1,7 +1,7 @@
 en:
   js:
     add_event:
-      btn_label: "Add Date and Time"
+      btn_label: "Add Event"
       modal_title: Date and Time
       event_start: Start
       event_end: End
@@ -19,6 +19,7 @@ en:
       going_max: "Maximum number of guests"
       going_max_label: "{{goingMax}} Guests"
     category:
+      events_setting_heading: "Events"
       enable_events: "Allow events to be added to topics in this category (overrides site setting)."
       enable_events_agenda: "Show an agenda topic list in this category (overrides site setting)."
       enable_events_calendar: "Show a calendar topic list in this category (overrides site setting)."
@@ -56,6 +57,8 @@ en:
       subscribe: "Subscribe"
       ical: "iCal"
       rss: "RSS"
+      subscription:
+        warning: "Never share these links with anyone!"
     user:
       events_calendar:
         label: "Calendar"
